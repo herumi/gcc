@@ -4521,33 +4521,69 @@ expand_divmod (int rem_flag, enum tree_code code, machine_mode mode,
 			else
 			  pre_shift = 0;
 
-			if (mh != 0)
-			  {
-			    rtx t1, t2, t3, t4;
+			    if (mh != 0)
+			      {
+				bool did_wide_mulh_path = false;
 
-			    if (post_shift - 1 >= BITS_PER_WORD)
-			      goto fail1;
+			    /* For 32-bit unsigned division, if converting to a wider
+			       mode lets us obtain the high part of the product
+			       directly, pre-shift the 33-bit magic constant
+			       (2^32 + ml) into that wider mode and use the high
+			       part of the widened multiply instead of the
+			       sub/shift/add sequence.
+			       Pre-shift by (32 - post_shift) so that the high
+			       bits of (x64 * magic) give the quotient directly.
+			       Note: mh!=0 implies pre_shift==0.  */
+			    if (size == 32 && post_shift >= 1)
+			      {
+				scalar_int_mode wide_mode
+				  = GET_MODE_WIDER_MODE (int_mode).require ();
+				uint64_t magic
+				  = (uint64_t (ml) + (uint64_t (1) << 32))
+				    << (32 - post_shift);
+				start_sequence ();
+				rtx x64 = convert_to_mode (wide_mode, op0, 1);
+				rtx hi = expmed_mult_highpart (wide_mode, x64,
+				   gen_int_mode (magic, wide_mode),
+				   NULL_RTX, 1, max_cost);
+				rtx_insn *insns = end_sequence ();
+				if (hi != NULL_RTX)
+					  {
+					    emit_insn (insns);
+					    quotient = gen_lowpart (int_mode, hi);
+					    did_wide_mulh_path = true;
+					  }
+			      }
 
-			    extra_cost
-			      = (shift_cost (speed, int_mode, post_shift - 1)
-				 + shift_cost (speed, int_mode, 1)
-				 + 2 * add_cost (speed, int_mode));
-			    t1 = expmed_mult_highpart
-			      (int_mode, op0, gen_int_mode (ml, int_mode),
-			       NULL_RTX, 1, max_cost - extra_cost);
-			    if (t1 == 0)
-			      goto fail1;
-			    t2 = force_operand (gen_rtx_MINUS (int_mode,
-							       op0, t1),
-						NULL_RTX);
-			    t3 = expand_shift (RSHIFT_EXPR, int_mode,
-					       t2, 1, NULL_RTX, 1);
-			    t4 = force_operand (gen_rtx_PLUS (int_mode,
-							      t1, t3),
-						NULL_RTX);
-			    quotient = expand_shift
-			      (RSHIFT_EXPR, int_mode, t4,
-			       post_shift - 1, tquotient, 1);
+			    if (!did_wide_mulh_path)
+			      {
+				rtx t1, t2, t3, t4;
+
+				if (post_shift - 1 >= BITS_PER_WORD)
+				  goto fail1;
+
+				extra_cost
+				  = (shift_cost (speed, int_mode,
+						 post_shift - 1)
+				     + shift_cost (speed, int_mode, 1)
+				     + 2 * add_cost (speed, int_mode));
+				t1 = expmed_mult_highpart
+				  (int_mode, op0, gen_int_mode (ml, int_mode),
+				   NULL_RTX, 1, max_cost - extra_cost);
+				if (t1 == 0)
+				  goto fail1;
+				t2 = force_operand (gen_rtx_MINUS (int_mode,
+								   op0, t1),
+							NULL_RTX);
+				t3 = expand_shift (RSHIFT_EXPR, int_mode,
+						   t2, 1, NULL_RTX, 1);
+				t4 = force_operand (gen_rtx_PLUS (int_mode,
+								  t1, t3),
+							NULL_RTX);
+				quotient = expand_shift
+				  (RSHIFT_EXPR, int_mode, t4,
+				   post_shift - 1, tquotient, 1);
+			      }
 			  }
 			else
 			  {
